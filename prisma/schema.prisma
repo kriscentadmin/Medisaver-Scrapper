@@ -1,0 +1,94 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Medicine {
+  id            Int      @id @default(autoincrement())
+
+  brand         String
+  strength      String
+  form          String
+  variant       String   // NORMAL | FORTE | XR | PR | SR | FORTE_PR
+
+  canonicalName String   @unique
+  approved      Boolean  @default(false)
+
+  createdAt     DateTime @default(now())
+
+  products      Product[]
+}
+
+model Product {
+  id            Int      @id @default(autoincrement())
+
+  medicineId    Int
+  medicine      Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+
+  source        Source
+  name          String
+  pack          String?
+  price         String?
+  originalPrice String?
+  discount      String?
+  productUrl    String?
+  endpoint      String?
+
+  scrapedAt     DateTime @default(now())
+
+  @@unique([medicineId, source])
+}
+
+model SearchRequest {
+  id            Int          @id @default(autoincrement())
+  brand         String
+  strength      String
+  form          String
+  variant       String
+  canonicalName String
+  operatorName  String
+  status        SearchStatus @default(PENDING)
+  createdAt     DateTime     @default(now())
+
+  @@unique([brand, strength, form, variant])
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+
+  email     String   @unique
+  password  String
+
+  role      Role     @default(ADMIN)
+
+  createdAt DateTime @default(now())
+}
+
+enum Role {
+  ADMIN
+}
+
+
+
+enum Source {
+  NETMEDS
+  PHARMEASY
+  ONEMG
+  TRUEMEDS
+}
+
+enum SearchStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
