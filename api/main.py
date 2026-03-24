@@ -1,3 +1,8 @@
+import asyncio
+import os
+import subprocess
+import sys
+
 from fastapi import FastAPI, HTTPException
 from prisma import Prisma
 from core.detector import detect_medicine_parts
@@ -7,8 +12,12 @@ from prisma.enums import Source
 from pydantic import BaseModel
 from typing import Optional
 from utils.medicine_parser import parse_medicine
+import runner as scraper_runner
+from pathlib import Path
+
 app = FastAPI()
 db = Prisma()
+scraper_process: subprocess.Popen | None = None
 
 
 class UpdateProductSchema(BaseModel):
@@ -41,9 +50,12 @@ class AddProductSchema(BaseModel):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://192.168.29.162:3000",
-        # "http://192.168.29.162:3001",  # optional if running frontend on network
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://192.168.29.162:3000",
+        ).split(",")
+        if origin.strip()
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -54,12 +66,14 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     await db.connect()
+    await scraper_runner.ensure_runner_tables()
+    await scraper_runner.recover_interrupted_run()
 
 @app.on_event("shutdown")
 async def shutdown():
     await db.disconnect()
 
- 
+
 # ================= USER SEARCH =================
 
 @app.get("/autocomplete")
@@ -130,7 +144,7 @@ async def search_by_medicine_id(medicineId: int):
 @app.post("/operator/request-medicine")
 async def operator_request_medicine(payload: OperatorMedicineRequest):
 
-    parts = parse_medicine(payload.name)
+    parts = await parse_medicine(payload.name)
 
     try:
         request = await db.searchrequest.create(
@@ -398,5 +412,79 @@ async def update_product(productId: int, payload: UpdateProductSchema):
     return {
         "status": "UPDATED",
         "product": updated
+    }
+
+
+@app.post("/admin/scraper/start")
+async def start_scraper():
+    global scraper_process
+
+    if scraper_process and scraper_process.poll() is None:
+        return {
+            "status": "ALREADY_RUNNING",
+            "scraper": await scraper_runner.get_runner_status(),
+            "progress": await scraper_runner.get_progress_snapshot(),
+        }
+
+    started_at = datetime.utcnow().isoformat()
+    await scraper_runner.update_run_status(
+        running=True,
+        started_at=started_at,
+        finished_at=None,
+        summary={"status": "starting", "startedAt": started_at},
+        error=None,
+    )
+
+    scraper_process = subprocess.Popen(
+        [sys.executable, "-m", "runner"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+
+    return {
+        "status": "STARTED",
+        "scraper": await scraper_runner.get_runner_status(),
+        "progress": await scraper_runner.get_progress_snapshot(),
+    }
+
+
+@app.get("/admin/scraper/status")
+async def get_scraper_status():
+    return {
+        "scraper": await scraper_runner.get_runner_status(),
+        "progress": await scraper_runner.get_progress_snapshot(),
+    }
+
+
+@app.post("/admin/scraper/stop")
+async def stop_scraper():
+    global scraper_process
+
+    if not scraper_process or scraper_process.poll() is not None:
+        return {
+            "status": "NOT_RUNNING",
+            "scraper": await scraper_runner.get_runner_status(),
+            "progress": await scraper_runner.get_progress_snapshot(),
+        }
+
+    try:
+        scraper_process.terminate()
+        scraper_process.wait(timeout=10)
+    except Exception:
+        scraper_process.kill()
+        scraper_process.wait(timeout=10)
+
+    stopped_at = datetime.utcnow().isoformat()
+    await scraper_runner.update_run_status(
+        running=False,
+        finished_at=stopped_at,
+        summary={"status": "stopped", "finishedAt": stopped_at},
+        error="stopped by admin",
+    )
+    scraper_process = None
+
+    return {
+        "status": "STOPPED",
+        "scraper": await scraper_runner.get_runner_status(),
+        "progress": await scraper_runner.get_progress_snapshot(),
     }
 

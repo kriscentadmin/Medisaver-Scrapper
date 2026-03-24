@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-py"
 }
@@ -14,27 +8,21 @@ datasource db {
 }
 
 model Medicine {
-  id            Int      @id @default(autoincrement())
-
+  id            Int       @id @default(autoincrement())
   brand         String
   strength      String
   form          String
-  variant       String   // NORMAL | FORTE | XR | PR | SR | FORTE_PR
-
-  canonicalName String   @unique
-  approved      Boolean  @default(false)
-
-  createdAt     DateTime @default(now())
-
+  variant       String
+  canonicalName String    @unique
+  approved      Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  approvedAt    DateTime?
   products      Product[]
 }
 
 model Product {
   id            Int      @id @default(autoincrement())
-
   medicineId    Int
-  medicine      Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
-
   source        Source
   name          String
   pack          String?
@@ -43,8 +31,8 @@ model Product {
   discount      String?
   productUrl    String?
   endpoint      String?
-
   scrapedAt     DateTime @default(now())
+  medicine      Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
 
   @@unique([medicineId, source])
 }
@@ -65,20 +53,42 @@ model SearchRequest {
 
 model User {
   id        Int      @id @default(autoincrement())
-
   email     String   @unique
   password  String
-
   role      Role     @default(ADMIN)
-
   createdAt DateTime @default(now())
+}
+
+model Form {
+  id   Int    @id @default(autoincrement())
+  form String @unique
+}
+
+model Variant {
+  id      Int    @id @default(autoincrement())
+  variant String @unique
+}
+
+model ScraperState {
+  id                  Int       @id
+  lastIndex           Int       @default(0) @map("last_index")
+  day                 String
+  elapsedSecondsToday Float     @default(0) @map("elapsed_seconds_today")
+  savedToday          Json      @map("saved_today")
+  totalSavedToday     Int       @default(0) @map("total_saved_today")
+  running             Boolean   @default(false)
+  startedAt           DateTime? @map("started_at")
+  finishedAt          DateTime? @map("finished_at")
+  summaryJson         Json?     @map("summary_json")
+  errorText           String?   @map("error_text")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@map("scraper_state")
 }
 
 enum Role {
   ADMIN
 }
-
-
 
 enum Source {
   NETMEDS
