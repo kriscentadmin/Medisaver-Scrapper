@@ -6,7 +6,7 @@ import sys
 from fastapi import FastAPI, HTTPException
 from prisma import Prisma
 from core.detector import detect_medicine_parts
-from datetime import datetime
+from datetime import UTC, datetime
 from fastapi.middleware.cors import CORSMiddleware
 from prisma.enums import Source
 from pydantic import BaseModel
@@ -327,7 +327,7 @@ async def add_product(payload: AddProductSchema):
                 "discount": payload.discount,
                 "productUrl": payload.productUrl,
                 "endpoint": payload.endpoint,
-                "scrapedAt": datetime.utcnow()
+                "scrapedAt": datetime.now(UTC)
             }
         }
     )
@@ -429,7 +429,7 @@ async def start_scraper():
             "progress": await scraper_runner.get_progress_snapshot(),
         }
 
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(UTC).isoformat()
     await scraper_runner.update_run_status(
         running=True,
         started_at=started_at,
@@ -479,7 +479,7 @@ async def stop_scraper():
         scraper_process.kill()
         scraper_process.wait(timeout=10)
 
-    stopped_at = datetime.utcnow().isoformat()
+    stopped_at = datetime.now(UTC).isoformat()
     await scraper_runner.update_run_status(
         running=False,
         finished_at=stopped_at,

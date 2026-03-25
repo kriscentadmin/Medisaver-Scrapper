@@ -18,6 +18,13 @@ def extract_discount_only(text):
     return match.group(1).strip() if match else None
 
 
+def extract_price_from_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    matches = re.findall(r"(?:₹|RS\.?)\s*([\d,]+(?:\.\d{1,2})?)", text, flags=re.IGNORECASE)
+    return matches[0] if matches else None
+
+
 async def scrape_pharmeasy(medicine, page):
     results = []
     best_candidate = None
@@ -78,13 +85,26 @@ async def scrape_pharmeasy(medicine, page):
 
                 price_el = await card.query_selector("[class*='ourPrice']")
                 price = (await price_el.inner_text()).strip() if price_el else None
+                if not price:
+                    card_text = await card.inner_text()
+                    price = extract_price_from_text(card_text)
 
                 mrp_el = await card.query_selector("[class*='striked']")
                 original_price = (await mrp_el.inner_text()).strip() if mrp_el else None
+                if not original_price:
+                    matches = re.findall(
+                        r"(?:₹|RS\.?)\s*([\d,]+(?:\.\d{1,2})?)",
+                        await card.inner_text(),
+                        flags=re.IGNORECASE,
+                    )
+                    if len(matches) > 1:
+                        original_price = matches[1]
 
                 discount_el = await card.query_selector("[class*='Discount']")
                 discount_raw = (await discount_el.inner_text()).strip() if discount_el else None
                 discount = extract_discount_only(discount_raw)
+                if not discount:
+                    discount = extract_discount_only(await card.inner_text())
 
                 pack_el = await card.query_selector("[class*='measurementUnit']")
                 pack = (await pack_el.inner_text()).strip() if pack_el else None

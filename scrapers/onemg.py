@@ -28,6 +28,14 @@ def clean_discount_text(text: str | None) -> str | None:
     return f"{match.group(1)}% off" if match else None
 
 
+def slug_to_searchable_text(href: str | None) -> str:
+    if not href:
+        return ""
+    slug = href.rstrip("/").split("/")[-1]
+    slug = re.sub(r"-\d+$", "", slug)
+    return slug.replace("-", " ").upper()
+
+
 async def close_popup(page) -> None:
     try:
         close_btn = await page.query_selector(
@@ -138,6 +146,17 @@ async def scrape_1mg(medicine, page):
                 href = await card.get_attribute("href")
                 if not href or not href.startswith("/drugs/"):
                     continue
+
+                if score < NEAR_MATCH_SCORE:
+                    # Some 1mg cards omit strength in the visible title.
+                    card_text = (await card.inner_text()).strip()
+                    fallback_text = " ".join(
+                        part for part in [name, card_text, slug_to_searchable_text(href)] if part
+                    )
+                    parsed_prod = await parse_medicine(fallback_text)
+                    score = score_parsed(ref, parsed_prod)
+                    if score < NEAR_MATCH_SCORE:
+                        continue
 
                 product_url = BASE_URL + href
                 endpoint = href

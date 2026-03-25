@@ -1,7 +1,7 @@
 import json
 import re
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from playwright.async_api import Error, TimeoutError, async_playwright
@@ -151,15 +151,24 @@ async def update_run_status(
 
 
 async def get_runner_status() -> dict[str, Any]:
-    await ensure_runner_tables()
-    row = await db.query_first(
-        """
-        SELECT running, started_at, finished_at, summary_json, error_text
-        FROM scraper_state
-        WHERE id = $1
-        """,
-        STATE_ROW_ID,
-    )
+    try:
+        await ensure_runner_tables()
+        row = await db.query_first(
+            """
+            SELECT running, started_at, finished_at, summary_json, error_text
+            FROM scraper_state
+            WHERE id = $1
+            """,
+            STATE_ROW_ID,
+        )
+    except Exception as exc:
+        return {
+            "running": False,
+            "startedAt": None,
+            "finishedAt": None,
+            "summary": None,
+            "error": f"status_unavailable: {exc}",
+        }
     if not row:
         return {
             "running": False,
@@ -246,7 +255,22 @@ def print_daily_status(progress: dict[str, Any], session_started_at: float) -> N
 
 
 async def get_progress_snapshot() -> dict[str, Any]:
-    progress = await ensure_today_progress(await load_progress())
+    try:
+        progress = await ensure_today_progress(await load_progress())
+    except Exception as exc:
+        return {
+            "day": today_key(),
+            "lastIndex": 0,
+            "elapsedSecondsToday": 0.0,
+            "savedToday": {site_name: 0 for site_name in SITE_NAMES},
+            "totalSavedToday": 0,
+            "cooldowns": {
+                site_name: max(0, int(site_cooldowns.get(site_name, 0) - time.time()))
+                for site_name in SITE_NAMES
+                if site_cooldowns.get(site_name, 0) > time.time()
+            },
+            "error": f"progress_unavailable: {exc}",
+        }
     cooldowns = {
         site_name: max(0, int(site_cooldowns.get(site_name, 0) - time.time()))
         for site_name in SITE_NAMES
@@ -337,7 +361,7 @@ def mark_site_cooldown(site_name: str, reason: str) -> int:
 def looks_like_block(error: Exception | str) -> bool:
     text = str(error).lower()
     patterns = [
-        "timeout", "captcha", "verify you are human", "robot", "bot detection",
+        "captcha", "verify you are human", "robot", "bot detection",
         "security check", "access denied", "forbidden", "temporarily blocked",
         "too many requests", "unusual traffic", "rate limit", "intercepts pointer events",
         "challenge", "cf-chl",
@@ -579,8 +603,7 @@ async def run() -> dict[str, Any]:
 
 
 def date_time_iso() -> str:
-    from datetime import datetime
-    return datetime.utcnow().isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 if __name__ == "__main__":
