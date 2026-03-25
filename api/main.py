@@ -53,7 +53,7 @@ app.add_middleware(
         origin.strip()
         for origin in os.getenv(
             "CORS_ORIGINS",
-            "http://localhost:3000,http://192.168.29.162:3000",
+            "http://localhost:3000,http://192.168.29.162:3000,https://medisaver-scrapper-admin.vercel.app",
         ).split(",")
         if origin.strip()
     ],
@@ -415,6 +415,9 @@ async def update_product(productId: int, payload: UpdateProductSchema):
     }
 
 
+
+# =============== API To Start Scrapper =====================
+
 @app.post("/admin/scraper/start")
 async def start_scraper():
     global scraper_process
@@ -446,6 +449,8 @@ async def start_scraper():
         "progress": await scraper_runner.get_progress_snapshot(),
     }
 
+# =============== API To Check Status =====================
+
 
 @app.get("/admin/scraper/status")
 async def get_scraper_status():
@@ -454,6 +459,7 @@ async def get_scraper_status():
         "progress": await scraper_runner.get_progress_snapshot(),
     }
 
+# =============== API To Stop Scrapper =====================
 
 @app.post("/admin/scraper/stop")
 async def stop_scraper():

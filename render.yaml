@@ -3,11 +3,14 @@ services:
     name: med-search-backend
     env: python
     plan: starter
-    buildCommand: pip install -r api/requirements.txt && python -m prisma db push --schema prisma/schema.prisma && python -m prisma generate && python -m playwright install --with-deps chromium
+    buildCommand: pip install -r requirements.txt && python -m prisma py fetch && python -m prisma generate --schema prisma/schema.prisma && python -m playwright install --with-deps chromium
+    preDeployCommand: python -m prisma db push --schema prisma/schema.prisma
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
-    autoDeploy: true
+    autoDeployTrigger: commit
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      - key: PRISMA_BINARY_CACHE_DIR
+        value: /opt/render/project/prisma/binaries
