@@ -1,0 +1,6 @@
+# Ignore the accidental nested virtualenv contents, but keep scraper source files.
+Include/
+Lib/
+Scripts/
+pyvenv.cfg
+__pycache__/
