@@ -622,15 +622,48 @@ async def update_product(productId: int, payload: UpdateProductSchema):
 
 # =============== START =====================
 
+# @app.post("/admin/scraper/start")
+# async def start_scraper():
+#     global scraper_process
+
+#     if scraper_process and scraper_process.poll() is None:
+#         return {
+#             "status": "ALREADY_RUNNING",
+#             "scraper": await scraper_runner.get_runner_status(),
+#             "progress": await scraper_runner.get_progress_snapshot(),
+#         }
+
+#     started_at = datetime.now(UTC).isoformat()
+
+#     await scraper_runner.update_run_status(
+#         running=True,
+#         started_at=started_at,
+#         finished_at=None,
+#         summary={"status": "running", "startedAt": started_at},
+#         error=None,
+#     )
+
+#     scraper_process = subprocess.Popen(
+#         [sys.executable, "-m", "runner"],
+#         cwd=str(Path(__file__).resolve().parent.parent),
+#     )
+
+#     print("✅ Scraper started PID:", scraper_process.pid)
+
+#     return {
+#         "status": "STARTED",
+#         "scraper": await scraper_runner.get_runner_status(),
+#         "progress": await scraper_runner.get_progress_snapshot(),
+#     }
+
 @app.post("/admin/scraper/start")
 async def start_scraper():
     global scraper_process
 
+    # 🔒 Prevent duplicate runs
     if scraper_process and scraper_process.poll() is None:
         return {
-            "status": "ALREADY_RUNNING",
-            "scraper": await scraper_runner.get_runner_status(),
-            "progress": await scraper_runner.get_progress_snapshot(),
+            "status": "ALREADY_RUNNING"
         }
 
     started_at = datetime.now(UTC).isoformat()
@@ -646,16 +679,17 @@ async def start_scraper():
     scraper_process = subprocess.Popen(
         [sys.executable, "-m", "runner"],
         cwd=str(Path(__file__).resolve().parent.parent),
+
+        # 🔥 VERY IMPORTANT (fix for cron-job.org)
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     print("✅ Scraper started PID:", scraper_process.pid)
 
     return {
-        "status": "STARTED",
-        "scraper": await scraper_runner.get_runner_status(),
-        "progress": await scraper_runner.get_progress_snapshot(),
+        "status": "STARTED"
     }
-
 
 # =============== STATUS =====================
 
