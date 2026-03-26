@@ -835,7 +835,7 @@ async def run() -> dict[str, Any]:
     return summary
 
 
-IST = datetime.now(ZoneInfo("Asia/Kolkata"))
+IST = ZoneInfo("Asia/Kolkata")
 
 def date_time_iso() -> str:
     return datetime.now(IST).isoformat()
