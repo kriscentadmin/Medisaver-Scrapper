@@ -10,8 +10,10 @@ db = Prisma()
 TYPO_FIX: dict[str, str] = {
     "TAB": "TABLET",
     "TABS": "TABLET",
+    "TABLETS": "TABLET",
     "CAP": "CAPSULE",
     "CAPS": "CAPSULE",
+    "CAPSULES": "CAPSULE",
     "OINMENT": "OINTMENT",
     "OINT": "OINTMENT",
     "SYP": "SYRUP",
@@ -22,11 +24,14 @@ PACK_PATTERNS = [
     re.compile(r"\d+\s*'S"),
     re.compile(r"\d+\s*TABS?\b"),
     re.compile(r"\d+\s*CAPS?\b"),
-    re.compile(r"\d+\s*TABLETS?\b"),
-    re.compile(r"\d+\s*CAPSULES?\b"),
+    re.compile(r"\d+\s*TABLETS\b"),
+    re.compile(r"\d+\s*CAPSULES\b"),
     re.compile(r"STRIP OF \d+"),
+    re.compile(r"STRIP OF\b"),
     re.compile(r"BOTTLE OF \d+"),
+    re.compile(r"BOTTLE OF\b"),
     re.compile(r"PACK OF \d+"),
+    re.compile(r"PACK OF\b"),
     re.compile(r"\d+\s*ML BOTTLE"),
     re.compile(r"\d+\s*ML\b"),
     re.compile(r"\d+ML\b"),
@@ -49,14 +54,18 @@ DEDUP_STRENGTH_REGEX = re.compile(r"^\d+(?:\.\d+)?(MG|MCG|G|ML|IU|%|MIU|MU)$")
 forms_cache: list[str] = []
 variants_cache: set[str] = set()
 ignored_variant_tokens = {"OF"}
+special_variant_tokens = {"PLUS"}
 load_lock = asyncio.Lock()
 load_task: asyncio.Task | None = None
 
 
 def normalize(text: str) -> str:
     normalized = text.upper()
+    normalized = re.sub(r"\bI\s*\.\s*U\s*\.\b", "IU", normalized)
+    normalized = re.sub(r"\bM\s*\.\s*I\s*\.\s*U\s*\.\b", "MIU", normalized)
+    normalized = re.sub(r"\bM\s*\.\s*U\s*\.\b", "MU", normalized)
     normalized = normalized.replace("-", " ")
-    normalized = normalized.replace("+", " + ")
+    normalized = normalized.replace("+", " PLUS ")
     normalized = normalized.replace("/", " / ")
     normalized = re.sub(r"[()]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
@@ -184,7 +193,9 @@ def extract_variant(tokens: list[str]) -> str | None:
     found = [
         token
         for index, token in enumerate(tokens)
-        if index != 0 and token in variants_cache and token not in ignored_variant_tokens
+        if index != 0
+        and (token in variants_cache or token in special_variant_tokens)
+        and token not in ignored_variant_tokens
     ]
     return " ".join(found) if found else None
 
@@ -237,8 +248,10 @@ def build_canonical(brand: str, variant: str, strength: str, form: str) -> str:
 async def parse_medicine(raw_name: str, debug: bool = False) -> dict[str, str]:
     await load_parser_data()
 
-    name = normalize(raw_name)
-    name = remove_pack(name)
+    normalized_name = normalize(raw_name)
+    form = extract_form(normalized_name)
+
+    name = remove_pack(normalized_name)
 
     tokens = tokenize(name)
     tokens = clean_duplicate_strengths(tokens)
@@ -247,7 +260,6 @@ async def parse_medicine(raw_name: str, debug: bool = False) -> dict[str, str]:
     if strength:
         strength = re.sub(r"GM", "G", strength, flags=re.IGNORECASE)
 
-    form = extract_form(name)
     variant = extract_variant(tokens)
     brand = extract_brand(tokens, strength, form, variant)
 

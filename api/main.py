@@ -418,6 +418,95 @@ async def update_product(productId: int, payload: UpdateProductSchema):
 
 # =============== API To Start Scrapper =====================
 
+# @app.post("/admin/scraper/start")
+# async def start_scraper():
+#     global scraper_process
+
+#     if scraper_process and scraper_process.poll() is None:
+#         return {
+#             "status": "ALREADY_RUNNING",
+#             "scraper": await scraper_runner.get_runner_status(),
+#             "progress": await scraper_runner.get_progress_snapshot(),
+#         }
+
+#     started_at = datetime.now(UTC).isoformat()
+#     await scraper_runner.update_run_status(
+#         running=True,
+#         started_at=started_at,
+#         finished_at=None,
+#         summary={"status": "starting", "startedAt": started_at},
+#         error=None,
+#     )
+
+#     scraper_process = subprocess.Popen(
+#         [sys.executable, "-m", "runner"],
+#         cwd=str(Path(__file__).resolve().parent.parent),
+#     )
+
+#     return {
+#         "status": "STARTED",
+#         "scraper": await scraper_runner.get_runner_status(),
+#         "progress": await scraper_runner.get_progress_snapshot(),
+#     }
+
+# # =============== API To Check Status =====================
+
+
+# @app.get("/admin/scraper/status")
+# async def get_scraper_status():
+#     return {
+#         "scraper": await scraper_runner.get_runner_status(),
+#         "progress": await scraper_runner.get_progress_snapshot(),
+#     }
+
+# # =============== API To Stop Scrapper =====================
+
+# @app.post("/admin/scraper/stop")
+# async def stop_scraper():
+#     global scraper_process
+
+#     if not scraper_process or scraper_process.poll() is not None:
+#         return {
+#             "status": "NOT_RUNNING",
+#             "scraper": await scraper_runner.get_runner_status(),
+#             "progress": await scraper_runner.get_progress_snapshot(),
+#         }
+
+#     try:
+#         scraper_process.terminate()
+#         scraper_process.wait(timeout=10)
+#     except Exception:
+#         scraper_process.kill()
+#         scraper_process.wait(timeout=10)
+
+#     stopped_at = datetime.now(UTC).isoformat()
+#     await scraper_runner.update_run_status(
+#         running=False,
+#         finished_at=stopped_at,
+#         summary={"status": "stopped", "finishedAt": stopped_at},
+#         error="stopped by admin",
+#     )
+#     scraper_process = None
+
+#     return {
+#         "status": "STOPPED",
+#         "scraper": await scraper_runner.get_runner_status(),
+#         "progress": await scraper_runner.get_progress_snapshot(),
+#     }
+# from fastapi import FastAPI
+# import subprocess
+# import sys
+# from pathlib import Path
+# from datetime import datetime, UTC
+# import os
+# import signal
+
+# app = FastAPI()  # ✅ changed from router to app
+
+scraper_process = None
+
+# =============== API TO START SCRAPER =====================
+
 @app.post("/admin/scraper/start")
 async def start_scraper():
     global scraper_process
@@ -430,6 +519,7 @@ async def start_scraper():
         }
 
     started_at = datetime.now(UTC).isoformat()
+
     await scraper_runner.update_run_status(
         running=True,
         started_at=started_at,
@@ -441,7 +531,10 @@ async def start_scraper():
     scraper_process = subprocess.Popen(
         [sys.executable, "-m", "runner"],
         cwd=str(Path(__file__).resolve().parent.parent),
+        preexec_fn=os.setsid  # 🔥 important
     )
+
+    print("✅ Scraper started PID:", scraper_process.pid)
 
     return {
         "status": "STARTED",
@@ -449,17 +542,38 @@ async def start_scraper():
         "progress": await scraper_runner.get_progress_snapshot(),
     }
 
-# =============== API To Check Status =====================
 
+# =============== API TO CHECK STATUS =====================
 
 @app.get("/admin/scraper/status")
 async def get_scraper_status():
+    global scraper_process
+
+    is_alive = scraper_process and scraper_process.poll() is None
+
+    status = await scraper_runner.get_runner_status()
+
+    print("📊 Process alive:", is_alive)
+
+    if not is_alive and status.get("running"):
+        stopped_at = datetime.now(UTC).isoformat()
+
+        await scraper_runner.update_run_status(
+            running=False,
+            finished_at=stopped_at,
+            summary={"status": "stopped", "finishedAt": stopped_at},
+            error="process stopped unexpectedly",
+        )
+
+        status["running"] = False
+
     return {
-        "scraper": await scraper_runner.get_runner_status(),
+        "scraper": status,
         "progress": await scraper_runner.get_progress_snapshot(),
     }
 
-# =============== API To Stop Scrapper =====================
+
+# =============== API TO STOP SCRAPER =====================
 
 @app.post("/admin/scraper/stop")
 async def stop_scraper():
@@ -472,25 +586,36 @@ async def stop_scraper():
             "progress": await scraper_runner.get_progress_snapshot(),
         }
 
+    print("🛑 Stopping scraper PID:", scraper_process.pid)
+
     try:
-        scraper_process.terminate()
-        scraper_process.wait(timeout=10)
-    except Exception:
-        scraper_process.kill()
-        scraper_process.wait(timeout=10)
+        os.killpg(os.getpgid(scraper_process.pid), signal.SIGTERM)
+
+        try:
+            scraper_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print("⚠️ Force killing scraper...")
+            os.killpg(os.getpgid(scraper_process.pid), signal.SIGKILL)
+            scraper_process.wait(timeout=5)
+
+    except Exception as e:
+        print("❌ Error stopping scraper:", str(e))
 
     stopped_at = datetime.now(UTC).isoformat()
+
     await scraper_runner.update_run_status(
         running=False,
         finished_at=stopped_at,
         summary={"status": "stopped", "finishedAt": stopped_at},
         error="stopped by admin",
     )
+
     scraper_process = None
+
+    print("✅ Scraper fully stopped")
 
     return {
         "status": "STOPPED",
         "scraper": await scraper_runner.get_runner_status(),
         "progress": await scraper_runner.get_progress_snapshot(),
     }
-

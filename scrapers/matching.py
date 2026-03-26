@@ -51,14 +51,24 @@ def score_parsed(med: dict, prod: dict) -> int:
     m_str = (med.get("strength") or "UNKNOWN").strip().upper()
     p_str = (prod.get("strength") or "UNKNOWN").strip().upper()
 
-    if m_str != p_str:
-        debug_lines.append(f"Strength REJECTED: {m_str} != {p_str}")
-        if DEBUG_MATCHING:
-            print("\n".join(debug_lines))
-        return -100
-
-    score += 30
-    debug_lines.append(f"Strength EXACT MATCH (+30) -> {m_str}")
+    if m_str == p_str:
+        score += 30
+        debug_lines.append(f"Strength EXACT MATCH (+30) -> {m_str}")
+    else:
+        m_num = extract_numeric_strength(m_str)
+        p_num = extract_numeric_strength(p_str)
+        if (
+            m_num is not None
+            and p_num is not None
+            and abs(m_num - p_num) < 1e-9
+        ):
+            score += 30
+            debug_lines.append(f"Strength NUMERIC MATCH (+30) -> {m_str} ~= {p_str}")
+        else:
+            debug_lines.append(f"Strength REJECTED: {m_str} != {p_str}")
+            if DEBUG_MATCHING:
+                print("\n".join(debug_lines))
+            return -100
 
     m_var = (med.get("variant") or "NORMAL").strip().upper()
     p_var = (prod.get("variant") or "NORMAL").strip().upper()
