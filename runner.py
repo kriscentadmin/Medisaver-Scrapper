@@ -7,7 +7,8 @@ import asyncio
 from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urlparse
-
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from playwright.async_api import Error, TimeoutError, async_playwright
 from prisma import Prisma
 
@@ -575,7 +576,7 @@ def mark_site_cooldown(site_name: str, reason: str) -> int:
     site_backoff_levels[site_name] = level
     seconds = min(BASE_SITE_COOLDOWN_SECONDS * (2 ** (level - 1)), MAX_SITE_COOLDOWN_SECONDS)
     site_cooldowns[site_name] = time.time() + seconds
-    print(f"  {site_name}: cooldown {seconds}s due to {reason}")
+    # print(f"  {site_name}: cooldown {seconds}s due to {reason}")
     return seconds
 
 
@@ -617,7 +618,7 @@ async def create_site_session(browser, site_name: str) -> dict[str, Any]:
         viewport={"width": 1366, "height": 768},
     )
     page = await context.new_page()
-    print(f"{site_name}: opened persistent session")
+    # print(f"{site_name}: opened persistent session")
     return {"context": context, "page": page}
 
 
@@ -632,7 +633,7 @@ async def close_site_session(site_name: str, session: dict[str, Any] | None) -> 
         await session["context"].close()
     except Exception:
         pass
-    print(f"{site_name}: closed session")
+    # print(f"{site_name}: closed session")
 
 
 async def ensure_site_session(browser, site_name: str, site_sessions: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -654,7 +655,7 @@ async def reset_site_session(browser, site_name: str, site_sessions: dict[str, d
 async def run_site_scraper(site_name: str, medicine: Any, browser: Any, site_sessions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     if is_site_cooling_down(site_name):
         remaining = max(0, int(site_cooldowns[site_name] - time.time()))
-        print(f"  {site_name}: cooldown active ({remaining}s left), skipping")
+        # print(f"  {site_name}: cooldown active ({remaining}s left), skipping")
         return []
     session = await ensure_site_session(browser, site_name, site_sessions)
     page = session["page"]
@@ -679,15 +680,15 @@ async def run_site_scraper(site_name: str, medicine: Any, browser: Any, site_ses
 
 
 async def scrape_medicine(medicine: Any, browser: Any, site_sessions: dict[str, dict[str, Any]], progress: dict[str, Any], warnings: list[dict[str, Any]]) -> None:
-    print(f"\nScraping: {medicine.canonicalName}")
+    # print(f"\nScraping: {medicine.canonicalName}")
     for site_name in SITE_NAMES:
         if site_limit_reached(progress, site_name):
-            print(f"  {site_name}: daily limit reached ({DAILY_SAVE_LIMIT_PER_SITE}), skipping")
+            # print(f"  {site_name}: daily limit reached ({DAILY_SAVE_LIMIT_PER_SITE}), skipping")
             continue
         try:
             result = await run_site_scraper(site_name, medicine, browser, site_sessions)
         except Exception as exc:
-            print(f"  {site_name}: failed -> {exc}")
+            # print(f"  {site_name}: failed -> {exc}")
             warnings.append({
                 "site": site_name,
                 "medicine": medicine.canonicalName,
@@ -700,26 +701,26 @@ async def scrape_medicine(medicine: Any, browser: Any, site_sessions: dict[str, 
             await human_delay(*SITE_DELAY_RANGE)
             continue
         if not result:
-            print(f"  {site_name}: no products")
+            # print(f"  {site_name}: no products")
             await human_delay(*SITE_DELAY_RANGE)
             continue
         top_product = result[0]
         score = int(top_product.get("_score", 0))
-        print(
-            f"  {site_name}: best score={score} | {describe_product_fields(top_product)} | "
-            f"name={top_product.get('name')} | pack={top_product.get('pack')} | "
-            f"price={top_product.get('price')} | originalPrice={top_product.get('originalPrice')} | "
-            f"discount={top_product.get('discount')} | productUrl={top_product.get('productUrl')} | "
-            f"endpoint={top_product.get('endpoint')}"
-        )
+        # print(
+        #     f"  {site_name}: best score={score} | {describe_product_fields(top_product)} | "
+        #     f"name={top_product.get('name')} | pack={top_product.get('pack')} | "
+        #     f"price={top_product.get('price')} | originalPrice={top_product.get('originalPrice')} | "
+        #     f"discount={top_product.get('discount')} | productUrl={top_product.get('productUrl')} | "
+        #     f"endpoint={top_product.get('endpoint')}"
+        # )
         if score < 90:
-            print(f"  {site_name}: below save threshold")
+            # print(f"  {site_name}: below save threshold")
             await human_delay(*SITE_DELAY_RANGE)
             continue
         await save_products(medicine.id, result, progress)
         await save_progress(progress)
         reset_site_backoff(site_name)
-        print(f"  {site_name}: saved {'exact match' if score >= 100 else 'near match'}")
+        # print(f"  {site_name}: saved {'exact match' if score >= 100 else 'near match'}")
         await human_delay(*SITE_DELAY_RANGE)
 
 
@@ -777,7 +778,7 @@ async def run() -> dict[str, Any]:
                 while True:
                     await asyncio.sleep(0) 
                     if time.time() - run_start > MAX_RUN_TIME:
-                     print("⏹ Cron limit reached, stopping run safely")
+                    #  print("⏹ Cron limit reached, stopping run safely")
                      break
 
                     if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
@@ -790,7 +791,7 @@ async def run() -> dict[str, Any]:
                     for medicine in medicines:
                         await asyncio.sleep(0)
                         if time.time() - run_start > MAX_RUN_TIME:
-                            print("⏹ Cron limit reached inside batch, stopping safely")
+                            # print("⏹ Cron limit reached inside batch, stopping safely")
                             break
                         if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
                             break
@@ -834,8 +835,10 @@ async def run() -> dict[str, Any]:
     return summary
 
 
+IST = datetime.now(ZoneInfo("Asia/Kolkata"))
+
 def date_time_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 if __name__ == "__main__":

@@ -656,6 +656,9 @@ async def update_product(productId: int, payload: UpdateProductSchema):
 #         "progress": await scraper_runner.get_progress_snapshot(),
 #     }
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 @app.post("/admin/scraper/start")
 async def start_scraper():
     global scraper_process
@@ -666,7 +669,7 @@ async def start_scraper():
             "status": "ALREADY_RUNNING"
         }
 
-    started_at = datetime.now(UTC).isoformat()
+    started_at = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
 
     await scraper_runner.update_run_status(
         running=True,
@@ -753,7 +756,7 @@ async def stop_scraper():
     except Exception as e:
         print("❌ Error stopping scraper:", str(e))
 
-    stopped_at = datetime.now(UTC).isoformat()
+    stopped_at = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
 
     await scraper_runner.update_run_status(
         running=False,
