@@ -14,7 +14,7 @@ from typing import Optional
 from utils.medicine_parser import parse_medicine
 import runner as scraper_runner
 from pathlib import Path
-
+from zoneinfo import ZoneInfo
 app = FastAPI()
 db = Prisma()
 scraper_process: subprocess.Popen | None = None
@@ -656,8 +656,7 @@ async def update_product(productId: int, payload: UpdateProductSchema):
 #         "progress": await scraper_runner.get_progress_snapshot(),
 #     }
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
+
 
 @app.post("/admin/scraper/start")
 async def start_scraper():
