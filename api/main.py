@@ -706,19 +706,25 @@ async def get_scraper_status():
 
     print("📊 Process alive:", is_alive)
 
-    # 🔥 HARD SYNC (THIS FIXES BUTTON BUG)
+    # ✅ FIXED LOGIC
     if not is_alive:
-        if status.get("running"):
-            stopped_at = datetime.now(UTC).isoformat()
+        # Only mark stopped if:
+        # 1. It was running
+        # 2. AND it has no finishedAt (means crashed)
+        if status.get("running") and not status.get("finishedAt"):
+            stopped_at = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
 
             await scraper_runner.update_run_status(
                 running=False,
                 finished_at=stopped_at,
                 summary={"status": "stopped", "finishedAt": stopped_at},
-                error="process stopped",
+                error="process stopped unexpectedly",
             )
 
-        status["running"] = False
+            status["running"] = False
+        else:
+            # ✅ Completed normally
+            status["running"] = False
     else:
         status["running"] = True
 
