@@ -15,9 +15,9 @@ from scrapers.base import human_delay, random_ua
 from scrapers import netmed, onemg, pharmaeasy, truemeds
 
 SITE_NAMES = ["PHARMEASY", "ONEMG", "NETMEDS", "TRUEMEDS"]
-SITE_DELAY_RANGE = (4, 8)
-MEDICINE_DELAY_RANGE = (8, 16)
-FETCH_BATCH_SIZE = 25
+SITE_DELAY_RANGE = (5, 10)
+MEDICINE_DELAY_RANGE = (10, 20)
+FETCH_BATCH_SIZE = 10
 BASE_SITE_COOLDOWN_SECONDS = 1800
 MAX_SITE_COOLDOWN_SECONDS = 4 * 60 * 60
 DAILY_RUNTIME_SECONDS = 8 * 60 * 60
@@ -731,6 +731,8 @@ async def run() -> dict[str, Any]:
     await ensure_runner_tables()
     progress = await ensure_today_progress(await load_progress())
     session_started_at = time.time()
+    MAX_RUN_TIME = 8 * 60  # 8 minutes
+    run_start = time.time()
     initial_last_index = int(progress["last_index"])
     initial_saved_today = {site_name: int(progress["saved_today"].get(site_name, 0)) for site_name in SITE_NAMES}
     warnings: list[dict[str, Any]] = []
@@ -773,6 +775,11 @@ async def run() -> dict[str, Any]:
             site_sessions: dict[str, dict[str, Any]] = {}
             try:
                 while True:
+                    await asyncio.sleep(0) 
+                    if time.time() - run_start > MAX_RUN_TIME:
+                     print("⏹ Cron limit reached, stopping run safely")
+                     break
+
                     if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
                         break
                     medicines = await fetch_medicines(int(progress["last_index"]))
@@ -781,6 +788,10 @@ async def run() -> dict[str, Any]:
                         await save_progress(progress)
                         break
                     for medicine in medicines:
+                        await asyncio.sleep(0)
+                        if time.time() - run_start > MAX_RUN_TIME:
+                            print("⏹ Cron limit reached inside batch, stopping safely")
+                            break
                         if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
                             break
                         await scrape_medicine(medicine, browser, site_sessions, progress, warnings)
