@@ -23,6 +23,11 @@ def scraper_timestamp() -> str:
     return scraper_runner.date_time_iso()
 
 
+@app.get("/")
+async def health_check():
+    return {"status": "ok"}
+
+
 class UpdateProductSchema(BaseModel):
     name: Optional[str]
     pack: Optional[str]
