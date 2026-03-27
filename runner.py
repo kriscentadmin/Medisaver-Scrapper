@@ -777,9 +777,9 @@ async def run() -> dict[str, Any]:
             try:
                 while True:
                     await asyncio.sleep(0) 
-                    if time.time() - run_start > MAX_RUN_TIME:
+                    # if time.time() - run_start > MAX_RUN_TIME:
                     #  print("⏹ Cron limit reached, stopping run safely")
-                     break
+                    #  break
 
                     if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
                         break
@@ -789,10 +789,10 @@ async def run() -> dict[str, Any]:
                         await save_progress(progress)
                         break
                     for medicine in medicines:
-                        await asyncio.sleep(0)
-                        if time.time() - run_start > MAX_RUN_TIME:
+                        # await asyncio.sleep(0)
+                        # if time.time() - run_start > MAX_RUN_TIME:
                             # print("⏹ Cron limit reached inside batch, stopping safely")
-                            break
+                            # break
                         if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
                             break
                         await scrape_medicine(medicine, browser, site_sessions, progress, warnings)
