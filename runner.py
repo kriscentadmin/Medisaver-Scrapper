@@ -19,6 +19,7 @@ SITE_NAMES = ["PHARMEASY", "ONEMG", "NETMEDS", "TRUEMEDS"]
 SITE_DELAY_RANGE = (5, 10)
 MEDICINE_DELAY_RANGE = (10, 20)
 FETCH_BATCH_SIZE = 10
+MAX_MEDICINES_PER_RUN = 10
 BASE_SITE_COOLDOWN_SECONDS = 1800
 MAX_SITE_COOLDOWN_SECONDS = 4 * 60 * 60
 DAILY_RUNTIME_SECONDS = 8 * 60 * 60
@@ -46,6 +47,37 @@ def to_iso_datetime(value: Any) -> str | None:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Kolkata"))
+
+
+def format_display_datetime(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = to_iso_datetime(value)
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=APP_TIMEZONE)
+    else:
+        dt = dt.astimezone(APP_TIMEZONE)
+    return dt.strftime("%d %b, %I:%M:%S %p").lower()
+
+
+def pick_status_time(summary: Any, key: str, fallback: Any) -> Any:
+    if isinstance(summary, dict):
+        value = summary.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return fallback
 
 
 def default_progress() -> dict[str, Any]:
@@ -242,7 +274,7 @@ async def upsert_product_with_retry(*, where: dict[str, Any], data: dict[str, An
     raise last_exc if last_exc else RuntimeError("unknown upsert failure")
 
 
-async def find_many_medicines_with_retry(start_index: int) -> list[Any]:
+async def find_many_medicines_with_retry(start_index: int, take: int = FETCH_BATCH_SIZE) -> list[Any]:
     last_exc: Exception | None = None
     for attempt in range(1, DB_RETRY_ATTEMPTS + 1):
         try:
@@ -251,7 +283,7 @@ async def find_many_medicines_with_retry(start_index: int) -> list[Any]:
             return await db.medicine.find_many(
                 where={"approved": False},
                 skip=start_index,
-                take=FETCH_BATCH_SIZE,
+                take=take,
                 order={"id": "asc"},
             )
         except Exception as exc:
@@ -260,7 +292,7 @@ async def find_many_medicines_with_retry(start_index: int) -> list[Any]:
                 if not is_prisma_connection_error(exc):
                     raise
                 await wait_for_db_recovery("medicine_find_many", exc)
-                return await find_many_medicines_with_retry(start_index)
+                return await find_many_medicines_with_retry(start_index, take)
             print(f"DB medicine.find_many retry {attempt}/{DB_RETRY_ATTEMPTS} after error: {exc}")
             try:
                 await reconnect_db()
@@ -350,8 +382,14 @@ async def update_run_status(
     finished_at: str | None = None,
     summary: dict[str, Any] | None = None,
     error: str | None = None,
+    updated_at: str | None = None,
 ) -> None:
     await ensure_runner_tables()
+    status_updated_at = updated_at or date_time_iso()
+    normalized_summary = None
+    if summary is not None:
+        normalized_summary = dict(summary)
+        normalized_summary["updatedAt"] = status_updated_at
     await execute_raw_with_retry(
         """
         UPDATE scraper_state
@@ -360,15 +398,16 @@ async def update_run_status(
             finished_at = $4::timestamptz,
             summary_json = $5::jsonb,
             error_text = $6,
-            updated_at = NOW()
+            updated_at = $7::timestamptz
         WHERE id = $1
         """,
         STATE_ROW_ID,
         running,
         started_at,
         finished_at,
-        json.dumps(summary) if summary is not None else None,
+        json.dumps(normalized_summary) if normalized_summary is not None else None,
         error,
+        status_updated_at,
     )
 
 
@@ -377,7 +416,7 @@ async def get_runner_status() -> dict[str, Any]:
         await ensure_runner_tables()
         row = await query_first_with_retry(
             """
-            SELECT running, started_at, finished_at, summary_json, error_text
+            SELECT running, started_at, finished_at, updated_at, summary_json, error_text
             FROM scraper_state
             WHERE id = $1
             """,
@@ -388,6 +427,7 @@ async def get_runner_status() -> dict[str, Any]:
             "running": False,
             "startedAt": None,
             "finishedAt": None,
+            "updatedAt": None,
             "summary": None,
             "error": f"status_unavailable: {exc}",
         }
@@ -396,6 +436,7 @@ async def get_runner_status() -> dict[str, Any]:
             "running": False,
             "startedAt": None,
             "finishedAt": None,
+            "updatedAt": None,
             "summary": None,
             "error": None,
         }
@@ -407,10 +448,18 @@ async def get_runner_status() -> dict[str, Any]:
         except Exception:
             summary = None
 
+    started_value = pick_status_time(summary, "startedAt", row.get("started_at"))
+    finished_value = pick_status_time(summary, "finishedAt", row.get("finished_at"))
+    updated_value = pick_status_time(summary, "updatedAt", row.get("updated_at"))
+
     return {
         "running": bool(row.get("running")),
-        "startedAt": to_iso_datetime(row.get("started_at")),
-        "finishedAt": to_iso_datetime(row.get("finished_at")),
+        "startedAt": to_iso_datetime(started_value),
+        "startedAtDisplay": format_display_datetime(started_value),
+        "finishedAt": to_iso_datetime(finished_value),
+        "finishedAtDisplay": format_display_datetime(finished_value),
+        "updatedAt": to_iso_datetime(updated_value),
+        "updatedAtDisplay": format_display_datetime(updated_value),
         "summary": summary,
         "error": row.get("error_text"),
     }
@@ -562,6 +611,10 @@ def describe_product_fields(product: dict[str, Any]) -> str:
     return "complete" if not missing else f"missing={','.join(missing)}"
 
 
+def log_scraper(message: str) -> None:
+    print(f"[SCRAPER] {message}", flush=True)
+
+
 def is_site_cooling_down(site_name: str) -> bool:
     return site_cooldowns.get(site_name, 0) > time.time()
 
@@ -637,29 +690,24 @@ async def close_site_session(site_name: str, session: dict[str, Any] | None) -> 
 
 
 async def ensure_site_session(browser, site_name: str, site_sessions: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    session = site_sessions.get(site_name)
-    if session:
-        return session
     session = await create_site_session(browser, site_name)
-    site_sessions[site_name] = session
     return session
 
 
 async def reset_site_session(browser, site_name: str, site_sessions: dict[str, dict[str, Any]]) -> dict[str, Any]:
     await close_site_session(site_name, site_sessions.get(site_name))
-    session = await create_site_session(browser, site_name)
-    site_sessions[site_name] = session
-    return session
+    return await create_site_session(browser, site_name)
 
 
 async def run_site_scraper(site_name: str, medicine: Any, browser: Any, site_sessions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     if is_site_cooling_down(site_name):
         remaining = max(0, int(site_cooldowns[site_name] - time.time()))
-        # print(f"  {site_name}: cooldown active ({remaining}s left), skipping")
+        log_scraper(f"{site_name}: cooldown active ({remaining}s left), skipping")
         return []
     session = await ensure_site_session(browser, site_name, site_sessions)
     page = session["page"]
     try:
+        log_scraper(f"{site_name}: searching for {medicine.canonicalName}")
         if site_name == "NETMEDS":
             results = await netmed.scrape_netmeds(medicine, page)
         elif site_name == "TRUEMEDS":
@@ -675,20 +723,24 @@ async def run_site_scraper(site_name: str, medicine: Any, browser: Any, site_ses
             raise RuntimeError(f"captcha/block page detected: {block_reason}")
         return results
     except (TimeoutError, Error, RuntimeError, Exception) as exc:
-        await reset_site_session(browser, site_name, site_sessions)
         raise exc
+    finally:
+        await close_site_session(site_name, session)
 
 
 async def scrape_medicine(medicine: Any, browser: Any, site_sessions: dict[str, dict[str, Any]], progress: dict[str, Any], warnings: list[dict[str, Any]]) -> None:
-    # print(f"\nScraping: {medicine.canonicalName}")
+    log_scraper(
+        f"Medicine #{int(progress['last_index']) + 1}: {medicine.canonicalName} "
+        f"({medicine.brand} {medicine.strength} {medicine.form})"
+    )
     for site_name in SITE_NAMES:
         if site_limit_reached(progress, site_name):
-            # print(f"  {site_name}: daily limit reached ({DAILY_SAVE_LIMIT_PER_SITE}), skipping")
+            log_scraper(f"{site_name}: daily limit reached ({DAILY_SAVE_LIMIT_PER_SITE}), skipping")
             continue
         try:
             result = await run_site_scraper(site_name, medicine, browser, site_sessions)
         except Exception as exc:
-            # print(f"  {site_name}: failed -> {exc}")
+            log_scraper(f"{site_name}: failed -> {exc}")
             warnings.append({
                 "site": site_name,
                 "medicine": medicine.canonicalName,
@@ -701,46 +753,51 @@ async def scrape_medicine(medicine: Any, browser: Any, site_sessions: dict[str, 
             await human_delay(*SITE_DELAY_RANGE)
             continue
         if not result:
-            # print(f"  {site_name}: no products")
+            log_scraper(f"{site_name}: no products")
             await human_delay(*SITE_DELAY_RANGE)
             continue
         top_product = result[0]
         score = int(top_product.get("_score", 0))
-        # print(
-        #     f"  {site_name}: best score={score} | {describe_product_fields(top_product)} | "
-        #     f"name={top_product.get('name')} | pack={top_product.get('pack')} | "
-        #     f"price={top_product.get('price')} | originalPrice={top_product.get('originalPrice')} | "
-        #     f"discount={top_product.get('discount')} | productUrl={top_product.get('productUrl')} | "
-        #     f"endpoint={top_product.get('endpoint')}"
-        # )
+        log_scraper(
+            f"{site_name}: best score={score} | {describe_product_fields(top_product)} | "
+            f"name={top_product.get('name')} | pack={top_product.get('pack')} | "
+            f"price={top_product.get('price')} | originalPrice={top_product.get('originalPrice')} | "
+            f"discount={top_product.get('discount')} | productUrl={top_product.get('productUrl')}"
+        )
         if score < 90:
-            # print(f"  {site_name}: below save threshold")
+            log_scraper(f"{site_name}: below save threshold")
             await human_delay(*SITE_DELAY_RANGE)
             continue
         await save_products(medicine.id, result, progress)
         await save_progress(progress)
         reset_site_backoff(site_name)
-        # print(f"  {site_name}: saved {'exact match' if score >= 100 else 'near match'}")
+        log_scraper(f"{site_name}: saved {'exact match' if score >= 100 else 'near match'}")
         await human_delay(*SITE_DELAY_RANGE)
 
 
-async def fetch_medicines(start_index: int) -> list[Any]:
-    return await find_many_medicines_with_retry(start_index)
+async def fetch_medicines(start_index: int, remaining: int = MAX_MEDICINES_PER_RUN) -> list[Any]:
+    batch_size = max(0, min(FETCH_BATCH_SIZE, remaining))
+    if batch_size == 0:
+        return []
+    return await find_many_medicines_with_retry(start_index, batch_size)
 
 
 async def run() -> dict[str, Any]:
     await ensure_runner_tables()
     progress = await ensure_today_progress(await load_progress())
     session_started_at = time.time()
+    session_started_at_iso = date_time_iso()
     MAX_RUN_TIME = 8 * 60  # 8 minutes
-    run_start = time.time()
     initial_last_index = int(progress["last_index"])
     initial_saved_today = {site_name: int(progress["saved_today"].get(site_name, 0)) for site_name in SITE_NAMES}
     warnings: list[dict[str, Any]] = []
     summary = {
         "status": "running",
-        "startedAt": int(session_started_at),
+        "runnerPid": os.getpid(),
+        "startedAt": session_started_at_iso,
+        "startedAtEpoch": int(session_started_at),
         "finishedAt": None,
+        "finishedAtEpoch": None,
         "sessionRuntimeSeconds": 0,
         "dayRuntimeSeconds": 0,
         "lastIndexStart": initial_last_index,
@@ -750,19 +807,24 @@ async def run() -> dict[str, Any]:
         "warnings": warnings,
         "progress": await get_progress_snapshot(),
     }
-    await update_run_status(running=True, started_at=date_time_iso(), finished_at=None, summary=summary, error=None)
+    medicines_processed_this_run = 0
+    await update_run_status(running=True, started_at=session_started_at_iso, finished_at=None, summary=summary, error=None)
 
     if runtime_limit_reached(progress, session_started_at):
+        finished_at_iso = date_time_iso()
         summary["status"] = "daily_runtime_exhausted"
-        summary["finishedAt"] = int(time.time())
+        summary["finishedAt"] = finished_at_iso
+        summary["finishedAtEpoch"] = int(time.time())
         summary["progress"] = await get_progress_snapshot()
-        await update_run_status(running=False, finished_at=date_time_iso(), summary=summary, error=None)
+        await update_run_status(running=False, finished_at=finished_at_iso, summary=summary, error=None)
         return summary
     if all_site_limits_reached(progress):
+        finished_at_iso = date_time_iso()
         summary["status"] = "daily_limits_reached"
-        summary["finishedAt"] = int(time.time())
+        summary["finishedAt"] = finished_at_iso
+        summary["finishedAtEpoch"] = int(time.time())
         summary["progress"] = await get_progress_snapshot()
-        await update_run_status(running=False, finished_at=date_time_iso(), summary=summary, error=None)
+        await update_run_status(running=False, finished_at=finished_at_iso, summary=summary, error=None)
         return summary
 
     if not db.is_connected():
@@ -771,9 +833,21 @@ async def run() -> dict[str, Any]:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=Translate,BackForwardCache,AcceptCHFrame",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--mute-audio",
+                ],
             )
-            site_sessions: dict[str, dict[str, Any]] = {}
             try:
                 while True:
                     await asyncio.sleep(0) 
@@ -781,9 +855,16 @@ async def run() -> dict[str, Any]:
                     #  print("⏹ Cron limit reached, stopping run safely")
                     #  break
 
-                    if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
+                    if (
+                        runtime_limit_reached(progress, session_started_at)
+                        or all_site_limits_reached(progress)
+                        or medicines_processed_this_run >= MAX_MEDICINES_PER_RUN
+                    ):
                         break
-                    medicines = await fetch_medicines(int(progress["last_index"]))
+                    medicines = await fetch_medicines(
+                        int(progress["last_index"]),
+                        MAX_MEDICINES_PER_RUN - medicines_processed_this_run,
+                    )
                     if not medicines:
                         progress["last_index"] = 0
                         await save_progress(progress)
@@ -793,9 +874,14 @@ async def run() -> dict[str, Any]:
                         # if time.time() - run_start > MAX_RUN_TIME:
                             # print("⏹ Cron limit reached inside batch, stopping safely")
                             # break
-                        if runtime_limit_reached(progress, session_started_at) or all_site_limits_reached(progress):
+                        if (
+                            runtime_limit_reached(progress, session_started_at)
+                            or all_site_limits_reached(progress)
+                            or medicines_processed_this_run >= MAX_MEDICINES_PER_RUN
+                        ):
                             break
-                        await scrape_medicine(medicine, browser, site_sessions, progress, warnings)
+                        await scrape_medicine(medicine, browser, {}, progress, warnings)
+                        medicines_processed_this_run += 1
                         progress["last_index"] = int(progress["last_index"]) + 1
                         summary["medicinesProcessed"] = int(summary["medicinesProcessed"]) + 1
                         summary["lastIndex"] = int(progress["last_index"])
@@ -814,15 +900,15 @@ async def run() -> dict[str, Any]:
                         )
                         await human_delay(*MEDICINE_DELAY_RANGE)
             finally:
-                for site_name in SITE_NAMES:
-                    await close_site_session(site_name, site_sessions.get(site_name))
                 await browser.close()
     finally:
         progress["elapsed_seconds_today"] = current_runtime_today(progress, session_started_at)
         await save_progress(progress)
 
+    finished_at_iso = date_time_iso()
     summary["status"] = "completed"
-    summary["finishedAt"] = int(time.time())
+    summary["finishedAt"] = finished_at_iso
+    summary["finishedAtEpoch"] = int(time.time())
     summary["sessionRuntimeSeconds"] = int(max(0, time.time() - session_started_at))
     summary["dayRuntimeSeconds"] = int(progress["elapsed_seconds_today"])
     summary["lastIndex"] = int(progress["last_index"])
@@ -831,14 +917,14 @@ async def run() -> dict[str, Any]:
         for site_name in SITE_NAMES
     }
     summary["progress"] = await get_progress_snapshot()
-    await update_run_status(running=False, finished_at=date_time_iso(), summary=summary, error=None)
+    await update_run_status(running=False, finished_at=finished_at_iso, summary=summary, error=None)
     return summary
 
 
-IST = ZoneInfo("Asia/Kolkata")
+BROWSER_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 def date_time_iso() -> str:
-    return datetime.now(IST).isoformat()
+    return datetime.now(APP_TIMEZONE).isoformat()
 
 
 if __name__ == "__main__":

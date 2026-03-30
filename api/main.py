@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import subprocess
 import sys
 
@@ -17,15 +18,89 @@ from pathlib import Path
 app = FastAPI()
 db = Prisma()
 scraper_process: subprocess.Popen | None = None
+current_run_started_at: str | None = None
 
 
 def scraper_timestamp() -> str:
     return scraper_runner.date_time_iso()
 
 
+def terminate_runner_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+    os.kill(pid, signal.SIGTERM)
+
+
+def format_status_response(scraper: dict, progress: dict) -> dict:
+    fetched_at = scraper_timestamp()
+    scraper_payload = dict(scraper)
+    scraper_payload["updatedAt"] = fetched_at
+    scraper_payload["updatedAtDisplay"] = scraper_runner.format_display_datetime(fetched_at)
+    return {
+        "scraper": scraper_payload,
+        "progress": progress,
+        "fetchedAt": fetched_at,
+        "fetchedAtDisplay": scraper_runner.format_display_datetime(fetched_at),
+    }
+
+
+def apply_time_overrides(
+    payload: dict,
+    *,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    updated_at: str | None = None,
+) -> dict:
+    response = dict(payload)
+    scraper_payload = dict(response.get("scraper") or {})
+
+    effective_updated_at = updated_at
+    if effective_updated_at:
+        scraper_payload["updatedAt"] = effective_updated_at
+        scraper_payload["updatedAtDisplay"] = scraper_runner.format_display_datetime(effective_updated_at)
+        response["fetchedAt"] = effective_updated_at
+        response["fetchedAtDisplay"] = scraper_runner.format_display_datetime(effective_updated_at)
+
+    if started_at:
+        scraper_payload["startedAt"] = started_at
+        scraper_payload["startedAtDisplay"] = scraper_runner.format_display_datetime(started_at)
+        summary = dict(scraper_payload.get("summary") or {})
+        summary["startedAt"] = started_at
+        scraper_payload["summary"] = summary
+
+    if finished_at:
+        scraper_payload["finishedAt"] = finished_at
+        scraper_payload["finishedAtDisplay"] = scraper_runner.format_display_datetime(finished_at)
+        summary = dict(scraper_payload.get("summary") or {})
+        summary["finishedAt"] = finished_at
+        scraper_payload["summary"] = summary
+
+    response["scraper"] = scraper_payload
+    return response
+
+
 @app.get("/")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/status")
+async def basic_status():
+    return {
+        "status": "ok",
+        **format_status_response(
+            await scraper_runner.get_runner_status(),
+            await scraper_runner.get_progress_snapshot(),
+        ),
+    }
 
 
 class UpdateProductSchema(BaseModel):
@@ -426,19 +501,24 @@ async def update_product(productId: int, payload: UpdateProductSchema):
 
 # =============== API To Start Scrapper =====================
 
+@app.api_route("/start", methods=["GET", "POST"])
 @app.api_route("/admin/scraper/start", methods=["GET", "POST"])
 @app.api_route("/admin/scarper/start", methods=["GET", "POST"])
 async def start_scraper():
-    global scraper_process
+    global scraper_process, current_run_started_at
 
     if scraper_process and scraper_process.poll() is None:
         return {
             "status": "ALREADY_RUNNING",
-            "scraper": await scraper_runner.get_runner_status(),
+            "scraper": {
+                **(await scraper_runner.get_runner_status()),
+                "running": True,
+            },
             "progress": await scraper_runner.get_progress_snapshot(),
         }
 
     started_at = scraper_timestamp()
+    current_run_started_at = started_at
     await scraper_runner.update_run_status(
         running=True,
         started_at=started_at,
@@ -452,54 +532,122 @@ async def start_scraper():
         cwd=str(Path(__file__).resolve().parent.parent),
     )
 
-    return {
+    response = apply_time_overrides({
         "status": "STARTED",
-        "scraper": await scraper_runner.get_runner_status(),
-        "progress": await scraper_runner.get_progress_snapshot(),
+        **format_status_response(
+            await scraper_runner.get_runner_status(),
+            await scraper_runner.get_progress_snapshot(),
+        ),
+    }, started_at=started_at, updated_at=started_at)
+    response["scraper"] = {
+        **dict(response.get("scraper") or {}),
+        "running": True,
+        "finishedAt": None,
+        "finishedAtDisplay": None,
+        "error": None,
+        "summary": {
+            **dict((response.get("scraper") or {}).get("summary") or {}),
+            "status": "running",
+            "startedAt": started_at,
+            "finishedAt": None,
+            "updatedAt": started_at,
+        },
     }
+    return response
 
 # =============== API To Check Status =====================
 
 
 @app.get("/admin/scraper/status")
 async def get_scraper_status():
-    return {
-        "scraper": await scraper_runner.get_runner_status(),
-        "progress": await scraper_runner.get_progress_snapshot(),
-    }
+    return format_status_response(
+        await scraper_runner.get_runner_status(),
+        await scraper_runner.get_progress_snapshot(),
+    )
 
 # =============== API To Stop Scrapper =====================
 
+@app.api_route("/stop", methods=["GET", "POST"])
 @app.api_route("/admin/scraper/stop", methods=["GET", "POST"])
 @app.api_route("/admin/scarper/stop", methods=["GET", "POST"])
 async def stop_scraper():
-    global scraper_process
+    global scraper_process, current_run_started_at
 
-    if not scraper_process or scraper_process.poll() is not None:
+    status_snapshot = await scraper_runner.get_runner_status()
+    runner_pid = None
+    summary = status_snapshot.get("summary") if isinstance(status_snapshot, dict) else None
+    if isinstance(summary, dict):
+        raw_pid = summary.get("runnerPid")
+        if raw_pid is not None:
+            try:
+                runner_pid = int(raw_pid)
+            except (TypeError, ValueError):
+                runner_pid = None
+
+    process_alive = scraper_process is not None and scraper_process.poll() is None
+    if not process_alive and not runner_pid:
         return {
             "status": "NOT_RUNNING",
-            "scraper": await scraper_runner.get_runner_status(),
-            "progress": await scraper_runner.get_progress_snapshot(),
+            **format_status_response(
+                status_snapshot,
+                await scraper_runner.get_progress_snapshot(),
+            ),
         }
 
     try:
-        scraper_process.terminate()
-        scraper_process.wait(timeout=10)
+        if process_alive and scraper_process is not None:
+            scraper_process.terminate()
+            scraper_process.wait(timeout=10)
+        elif runner_pid:
+            terminate_runner_pid(runner_pid)
     except Exception:
-        scraper_process.kill()
-        scraper_process.wait(timeout=10)
+        if process_alive and scraper_process is not None:
+            scraper_process.kill()
+            scraper_process.wait(timeout=10)
+        elif runner_pid:
+            terminate_runner_pid(runner_pid)
 
     stopped_at = scraper_timestamp()
+    started_at = current_run_started_at
+    if not started_at:
+        started_at = status_snapshot.get("startedAt") if isinstance(status_snapshot, dict) else None
+    if not started_at and isinstance(summary, dict):
+        raw_started = summary.get("startedAt")
+        if isinstance(raw_started, str) and raw_started.strip():
+            started_at = raw_started
+
     await scraper_runner.update_run_status(
         running=False,
+        started_at=started_at,
         finished_at=stopped_at,
-        summary={"status": "stopped", "finishedAt": stopped_at},
+        summary={
+            "status": "stopped",
+            "startedAt": started_at,
+            "finishedAt": stopped_at,
+            "runnerPid": runner_pid,
+        },
         error="stopped by admin",
     )
     scraper_process = None
+    current_run_started_at = None
 
-    return {
+    response = apply_time_overrides({
         "status": "STOPPED",
-        "scraper": await scraper_runner.get_runner_status(),
-        "progress": await scraper_runner.get_progress_snapshot(),
+        **format_status_response(
+            await scraper_runner.get_runner_status(),
+            await scraper_runner.get_progress_snapshot(),
+        ),
+    }, started_at=started_at, finished_at=stopped_at, updated_at=stopped_at)
+    response["scraper"] = {
+        **dict(response.get("scraper") or {}),
+        "running": False,
+        "error": "stopped by admin",
+        "summary": {
+            **dict((response.get("scraper") or {}).get("summary") or {}),
+            "status": "stopped",
+            "startedAt": started_at,
+            "finishedAt": stopped_at,
+            "updatedAt": stopped_at,
+        },
     }
+    return response
